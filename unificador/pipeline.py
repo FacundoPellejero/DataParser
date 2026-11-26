@@ -16,7 +16,8 @@ def _write(path: Path, header: list[str], rows: list[list]) -> None:
         writer.writerows(rows)
 
 
-def run(input_path: str | Path, prefixes_path: str | Path, out_dir: str | Path) -> dict:
+def run(input_path: str | Path, prefixes_path: str | Path, out_dir: str | Path,
+        use_ai: bool = False, max_ai: int = 10) -> dict:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     prefix_map = load_prefix_map(prefixes_path)
@@ -66,6 +67,31 @@ def run(input_path: str | Path, prefixes_path: str | Path, out_dir: str | Path) 
         dup_rows,
     )
 
+    ai_count = 0
+    if use_ai:
+        import time
+        from .ai_suggest import suggest_for_review
+        from .providers import gemini_call
+
+        valid_prefixes = sorted(
+            {r["normalized"][:2] for r in rows if r["normalized"]}
+            | set(prefix_map.values())
+        )
+        examples = [(r["normalized"], r["description"]) for r in rows if r["normalized"]][:30]
+
+        def paced_call(prompt):
+            time.sleep(1)  # pausa para no pasarse de los límites del nivel gratuito
+            return gemini_call(prompt)
+
+        suggestions = suggest_for_review(review[:max_ai], valid_prefixes, examples, paced_call)
+        _write(
+            out / "suggested.csv",
+            ["original", "descripcion", "sugerencia", "confianza", "motivo", "estado"],
+            [[s["original"], s["description"], s["sugerencia"] or "", s["confianza"] or "",
+              s["motivo"], s["estado"]] for s in suggestions],
+        )
+        ai_count = sum(1 for s in suggestions if s["estado"] == "SUGERIDO_IA")
+
     counts = Counter(r["status"] for r in rows)
     return {
         "total": len(rows),
@@ -74,4 +100,5 @@ def run(input_path: str | Path, prefixes_path: str | Path, out_dir: str | Path) 
         "review": counts.get("REVIEW", 0),
         "grupos_mismo_codigo": len(exact),
         "pares_descripcion_parecida": len(similar),
+        "sugeridos_ia": ai_count,
     }
